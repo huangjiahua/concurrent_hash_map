@@ -1,0 +1,1 @@
+add_executable(hitter_test hitter_test.cpp)
