@@ -504,7 +504,7 @@ struct ThreadHashMapStat {
     GeneralLazySS<size_t> ss_;
     size_t total_;
 
-    ThreadHashMapStat(): ss_(0.00001), total_(0) {}
+    ThreadHashMapStat() : ss_(0.00001), total_(0) {}
 
     size_t GetCount(size_t h) {
         auto p = ss_.find(h);
@@ -535,8 +535,11 @@ class ConcurrentHashMap {
     static constexpr size_t kMaxDepth = 10;
     using ArrayNodeT = ArrayNode<kArrayNodeSize>;
 public:
-    ConcurrentHashMap(size_t root_size, size_t max_depth, size_t thread_cnt = 32) :
-            ft_(65536), stat_(0) {
+    ConcurrentHashMap(size_t root_size, size_t max_depth, size_t thread_cnt = 32)
+#ifndef DISABLE_FAST_TABLE
+    : ft_(65536), stat_(0)
+#endif
+    {
         root_size_ = util::nextPowerOf2(root_size);
         root_bits_ = util::powerOf2(root_size_);
         thread_cnt = util::nextPowerOf2(thread_cnt);
@@ -553,15 +556,18 @@ public:
             new(root_[i]) Atom<TreeNode *>;
             root_[i].store(nullptr);
         }
+#ifndef DISABLE_FAST_TABLE
         stat_.reserve(64);
         for (size_t i = 0; i < 64; i++) {
             stat_.push_back(new ThreadHashMapStat);
         }
+#endif
     }
 
 
     bool Insert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
         size_t h = HashFn()(k);
+#ifndef DISABLE_FAST_TABLE
         size_t tid = Thread::id();
         ThreadHashMapStat *stat = stat_[tid];
         if (stat->total_ < 5000000)
@@ -578,9 +584,9 @@ public:
             for (size_t i = 0; i < 65536; i++) {
                 size_t hash = p[i].getItem();
                 if (hash != std::numeric_limits<size_t>::max()) {
-                    std::array<HazPtrHolder, 2> haz_arr;
+                    HazPtrHolder tmp_holder;
                     Atom<TreeNode *> *locate = nullptr;
-                    auto elem = FindByHash(hash, haz_arr, locate);
+                    auto elem = FindByHash(hash, tmp_holder, locate);
                     if (elem) {
                         bool r = ft_.CheckedInsert(hash, elem->kv_pair_.first, elem->kv_pair_.second);
                         if (r) {
@@ -590,7 +596,7 @@ public:
                 }
             }
         }
-
+#endif
         DataNodeT *new_node = (DataNodeT *) Allocator().allocate(sizeof(DataNodeT));
         new(new_node) DataNodeT(k, v);
         std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> ptr(new_node, [](DataNodeT *n) {
@@ -604,45 +610,33 @@ public:
 
     bool Find(const KeyType &k, ValueType &v) {
         thread_local size_t counter{0};
-        thread_local size_t hit{0};
         counter++;
 
         size_t h = HashFn()(k);
 
+#ifndef DISABLE_FAST_TABLE
         if ((counter & (0x0full)) == 0) {
             size_t tid = Thread::id();
             stat_[tid]->Record(h);
-        }
-
-        if (counter == 40000000) {
-            std::cout << (double) hit / (double) counter << std::endl;
         }
 
         {
             HazPtrHolder holder;
             auto node = ft_.PinnedFind(h, k, holder);
             if (node) {
-                hit++;
                 v = node->Value();
                 return true;
             }
         }
-
+#endif
         size_t n = 0;
-        std::array<HazPtrHolder, 2> haz_arr;
-        size_t curr_holder_idx = 0;
 
         size_t idx = GetRootIdx(h);
         Atom<TreeNode *> *node_ptr = &root_[idx];
         TreeNode *node = nullptr;
+        HazPtrHolder holder;
         while (true) {
-            curr_holder_idx = (curr_holder_idx + 1ull) & 1ull;
-            HazPtrHolder &holder = haz_arr[curr_holder_idx];
-            HazPtrHolder &next_holder = haz_arr[(curr_holder_idx + 1ull) & 1ull];
-
-            if (n == 0) {
-                node = holder.Pin(*node_ptr);
-            }
+            node = holder.Repin(*node_ptr);
 
             if (!node) {
                 return false;
@@ -659,23 +653,13 @@ public:
                     }
                 }
                 case TreeNodeType::ARRAY_NODE: {
-                    ArrayNodeT *arr_node = static_cast<ArrayNodeT *>(node);
                     n++;
+                    ArrayNodeT *arr_node = static_cast<ArrayNodeT *>(node);
                     idx = GetNthIdx(h, n);
                     node_ptr = &arr_node->array_[idx];
-                    node = next_holder.Pin(*node_ptr);
-                    holder.Reset();
                     continue;
                 }
                 case TreeNodeType::BUCKETS_NODE: {
-//                    BucketMapT *bucket_map = static_cast<BucketMapT *>(node);
-//                    typename BucketMapT::Iterator iter;
-//                    if (bucket_map->Find(iter, k)) {
-//                        v = iter->second;
-//                        return true;
-//                    } else {
-//                        return false;
-//                    }
                     std::cerr << "Not supported yet" << std::endl;
                     exit(1);
                 }
@@ -694,7 +678,7 @@ private:
         return (h & (kArrayNodeSize - 1));
     }
 
-    DataNodeT *FindByHash(size_t h, std::array<HazPtrHolder, 2> &haz_arr, Atom<TreeNode *> *&locate) {
+    DataNodeT *FindByHash(size_t h, HazPtrHolder &holder, Atom<TreeNode *> *&locate) {
         size_t n = 0;
         size_t curr_holder_idx = 0;
 
@@ -702,13 +686,7 @@ private:
         Atom<TreeNode *> *node_ptr = &root_[idx];
         TreeNode *node = nullptr;
         while (true) {
-            curr_holder_idx = (curr_holder_idx + 1ull) & 1ull;
-            HazPtrHolder &holder = haz_arr[curr_holder_idx];
-            HazPtrHolder &next_holder = haz_arr[(curr_holder_idx + 1ull) & 1ull];
-
-            if (n == 0) {
-                node = holder.Pin(*node_ptr);
-            }
+            node = holder.Pin(*node_ptr);
 
             if (!node) {
                 return nullptr;
@@ -721,12 +699,11 @@ private:
                     return d_node;
                 }
                 case TreeNodeType::ARRAY_NODE: {
-                    ArrayNodeT *arr_node = static_cast<ArrayNodeT *>(node);
                     n++;
+                    holder.Reset();
+                    ArrayNodeT *arr_node = static_cast<ArrayNodeT *>(node);
                     idx = GetNthIdx(h, n);
                     node_ptr = &arr_node->array_[idx];
-                    node = next_holder.Pin(*node_ptr);
-                    holder.Reset();
                     continue;
                 }
                 case TreeNodeType::BUCKETS_NODE: {
@@ -740,18 +717,13 @@ private:
     bool DoInsert(size_t h, const KeyType &k, std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> &ptr,
                   InsertType type) {
         size_t n = 0;
-        std::array<HazPtrHolder, 2> haz_arr;
-        size_t curr_holder_idx = 0;
 
         size_t idx = GetRootIdx(h);
         Atom<TreeNode *> *node_ptr = &root_[idx];
         TreeNode *node = nullptr;
+        HazPtrHolder holder;
         while (true) {
-            curr_holder_idx = (curr_holder_idx + 1ull) & 1ull;
-            HazPtrHolder &holder = haz_arr[curr_holder_idx];
-            HazPtrHolder &next_holder = haz_arr[(curr_holder_idx + 1ull) & 1ull];
-
-            node = holder.Pin(*node_ptr);
+            node = holder.Repin(*node_ptr);
 
             if (!node) {
                 if (type == InsertType::MUST_EXIST) {
@@ -761,75 +733,87 @@ private:
                 bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) ptr.get(),
                                                                 std::memory_order_acq_rel);
                 if (!result) {
-                    holder.Reset();
                     continue;
                 }
                 ptr.release();
                 return true;
-            } else {
-                switch (node->Type()) {
-                    case TreeNodeType::DATA_NODE: {
-                        if (type == InsertType::DOES_NOT_EXIST) {
-                            return false;
-                        }
-                        DataNodeT *d_node = static_cast<DataNodeT *>(node);
-                        if (KeyEqual()(d_node->kv_pair_.first, k)) {
-                            bool result = node_ptr->compare_exchange_strong(node, ptr.get(), std::memory_order_acq_rel);
-                            if (!result) {
-                                holder.Reset();
-                                continue;
-                            }
-                            ptr.release();
-                            HazPtrRetire(d_node);
-                            return true;
-                        } else {
-                            if (n < max_depth_ - 1) {
-                                std::unique_ptr<ArrayNodeT> tmp_arr_ptr(new ArrayNodeT);
-                                size_t tmp_hash = HashFn()(d_node->kv_pair_.first);
-                                size_t tmp_idx = GetNthIdx(tmp_hash, n + 1);
-                                tmp_arr_ptr->array_[tmp_idx].store(node, std::memory_order_relaxed);
-                                bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) tmp_arr_ptr.get(),
-                                                                                std::memory_order_acq_rel);
-                                holder.Reset();
-                                if (result) {
-                                    n++;
-                                    size_t curr_idx = GetNthIdx(h, n);
-                                    node_ptr = &tmp_arr_ptr->array_[curr_idx];
-                                    tmp_arr_ptr.release();
-                                }
-                                continue;
-                            } else {
-                                std::cerr << "Not Implemented Yet" << std::endl;
-                                exit(1);
-                            }
-                        }
-                    }
-                    case TreeNodeType::ARRAY_NODE: {
-                        n++;
-                        holder.Reset();
-                        ArrayNodeT *arr_node = static_cast<ArrayNodeT *>(node);
-                        size_t curr_idx = GetNthIdx(h, n);
-                        node_ptr = &arr_node->array_[curr_idx];
-                        continue;
-                    }
-                    case TreeNodeType::BUCKETS_NODE: {
+            }
 
-                        std::cerr << "Not Implemented Yet" << std::endl;
-                        exit(1);
+            switch (node->Type()) {
+                case TreeNodeType::DATA_NODE: {
+                    if (type == InsertType::DOES_NOT_EXIST) {
+                        return false;
+                    }
+                    DataNodeT *d_node = static_cast<DataNodeT *>(node);
+                    if (KeyEqual()(d_node->kv_pair_.first, k)) {
+                        bool result = node_ptr->compare_exchange_strong(node, ptr.get(), std::memory_order_acq_rel);
+                        if (!result) {
+                            continue;
+                        }
+                        ptr.release();
+                        HazPtrRetire(d_node);
+                        return true;
+                    } else {
+                        if (n < max_depth_ - 1) {
+                            std::unique_ptr<ArrayNodeT> tmp_arr_ptr(new ArrayNodeT);
+                            size_t tmp_hash = HashFn()(d_node->kv_pair_.first);
+                            size_t tmp_idx = GetNthIdx(tmp_hash, n + 1);
+                            size_t next_idx = GetNthIdx(h, n+ 1);
+
+                            tmp_arr_ptr->array_[tmp_idx].store(node, std::memory_order_relaxed);
+
+                            if (next_idx != tmp_idx) {
+                                tmp_arr_ptr->array_[next_idx].store(ptr.get(), std::memory_order_relaxed);
+                            }
+
+                            bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) tmp_arr_ptr.get(),
+                                                                            std::memory_order_acq_rel);
+
+                            if (next_idx != tmp_idx) {
+                                ptr.release();
+                                tmp_arr_ptr.release();
+                                return true;
+                            }
+
+                            if (result) {
+                                n++;
+                                size_t curr_idx = GetNthIdx(h, n);
+                                node_ptr = &tmp_arr_ptr->array_[curr_idx];
+                                tmp_arr_ptr.release();
+                            }
+                            continue;
+                        } else {
+                            std::cerr << "Not Implemented Yet" << std::endl;
+                            exit(1);
+                        }
                     }
                 }
+                case TreeNodeType::ARRAY_NODE: {
+                    n++;
+                    holder.Reset();
+                    ArrayNodeT *arr_node = static_cast<ArrayNodeT *>(node);
+                    size_t curr_idx = GetNthIdx(h, n);
+                    node_ptr = &arr_node->array_[curr_idx];
+                    continue;
+                }
+                case TreeNodeType::BUCKETS_NODE: {
+                    std::cerr << "Not Implemented Yet" << std::endl;
+                    exit(1);
+                }
             }
+
         }
     }
 
 private:
     Atom<TreeNode *> *root_{nullptr};
     std::function<size_t(const KeyType &)> bucket_map_hasher_;
+#ifndef DISABLE_FAST_TABLE
     FastTable<KeyType, ValueType> ft_;
     std::vector<ThreadHashMapStat*> stat_;
+#endif
     size_t root_size_{0};
     size_t root_bits_{0};
     size_t max_depth_{0};
-    bool enable_fast_table_{true};
 };
 
