@@ -615,11 +615,6 @@ public:
         size_t h = HashFn()(k);
 
 #ifndef DISABLE_FAST_TABLE
-        if ((counter & (0x0full)) == 0) {
-            size_t tid = Thread::id();
-            stat_[tid]->Record(h);
-        }
-
         {
             HazPtrHolder holder;
             auto node = ft_.PinnedFind(h, k, holder);
