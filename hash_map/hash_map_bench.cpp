@@ -18,6 +18,7 @@ struct HMBConfig {
     size_t max_depth = 20;
     double zipf_factor = 0.99;
     bool only_tp = false;
+    bool uniform = false;
 
     void LoadConfig(int argc, const char *argv[]) {
         for (int i = 1; i < argc; i++) {
@@ -66,6 +67,19 @@ struct HMBConfig {
                 i++;
                 auto s = std::string(argv[i]);
                 zipf_factor = std::stod(s);
+            } else if (arg == "--rootsize") {
+                if (i + 1 > argc) {
+                    Panic("param error");
+                }
+                i++;
+                auto s = std::string(argv[i]);
+                initial_size = std::stoull(s);
+            } else if (arg == "--uniform") {
+                if (i + 1 > argc) {
+                    Panic("param error");
+                }
+                i++;
+                uniform = true;
             } else {
                 Panic("param error");
             }
@@ -88,11 +102,21 @@ int main(int argc, const char *argv[]) {
                                                                                     config.max_depth,
                                                                                     config.thread_count);
     for (size_t i = 0; i < config.operations; i++) {
-        map.Insert(rng.GenZipf<uint64_t>(config.key_range, config.zipf_factor), 0);
+        if (config.uniform) {
+            map.Insert(rng.Gen<uint64_t>(0, config.key_range), 0);
+        } else {
+            map.Insert(rng.GenZipf<uint64_t>(config.key_range, config.zipf_factor), 0);
+        }
     }
 
     vector<uint64_t> keys(config.operations + 1000);
-    for (auto &key : keys) key = rng.GenZipf<uint64_t>(config.key_range, config.zipf_factor);
+    for (auto &key : keys) {
+        if (config.uniform) {
+            key = rng.Gen<uint64_t>(0, config.key_range);
+        } else {
+            key = rng.GenZipf<uint64_t>(config.key_range, config.zipf_factor);
+        }
+    }
     vector<int> coins(config.operations + 1000);
     for (auto &coin: coins) coin = rng.FlipCoin(config.read_ratio);
     vector<thread> threads(config.thread_count);
