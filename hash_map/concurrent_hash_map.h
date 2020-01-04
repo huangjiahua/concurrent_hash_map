@@ -566,6 +566,26 @@ public:
 #endif
     }
 
+#ifndef DISABLE_FAST_TABLE
+    enum class AsyncInsertReturnCode {
+        Ok,
+        Error,
+        Pending,
+    };
+
+    AsyncInsertReturnCode AsyncInsert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
+        size_t h = HashFn()(k);
+        size_t tid = Thread::id();
+        ThreadHashMapStat *stat = stat_[tid];
+
+        if (stat->total_ >= 5000000 && ft_.TryUpdate(h, k, v)) {
+            return AsyncInsertReturnCode::Ok;
+        }
+
+        return AsyncInsertReturnCode::Pending;
+    }
+#endif
+
 
     bool Insert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
         size_t h = HashFn()(k);
