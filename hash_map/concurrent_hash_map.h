@@ -567,22 +567,32 @@ public:
     }
 
 #ifndef DISABLE_FAST_TABLE
-    enum class AsyncInsertReturnCode {
+    enum class AsyncReturnCode {
         Ok,
         Error,
         Pending,
     };
 
-    AsyncInsertReturnCode AsyncInsert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
+    AsyncReturnCode AsyncInsert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
         size_t h = HashFn()(k);
         size_t tid = Thread::id();
         ThreadHashMapStat *stat = stat_[tid];
 
         if (stat->total_ >= 5000000 && ft_.TryUpdate(h, k, v)) {
-            return AsyncInsertReturnCode::Ok;
+            return AsyncReturnCode::Ok;
         }
 
-        return AsyncInsertReturnCode::Pending;
+        return AsyncReturnCode::Pending;
+    }
+
+    AsyncReturnCode AsyncFind(const KeyType &k, ValueType &v) {
+        size_t h = HashFn()(k);
+        auto node = ft_.PinnedFind(h, k);
+        if (node) {
+            v = node->Value();
+            return AsyncReturnCode::Ok;
+        }
+        return AsyncReturnCode::Pending;
     }
 #endif
 
