@@ -123,7 +123,7 @@ struct RetiredBlock {
 class HazPtrHolder;
 
 class HazPtrDomain {
-    constexpr static size_t kMaxRetiredLen = 256;
+    constexpr static size_t kMaxRetiredLen = 255;
     constexpr static size_t kMustTryFree = 128;
     constexpr static uintptr_t kValidPtrField = 0x0000ffffffffffffull;
 
@@ -139,6 +139,59 @@ private:
     static thread_local size_t idx_;
     static thread_local HazPtrSlice local_protected_;
     static thread_local std::queue<RetiredBlock> retired_queue_;
+
+private:
+    template <typename T, size_t N> 
+    struct CircularQueue {
+        constexpr static size_t ArraySize = N + 1;
+        std::array<T, ArraySize> arr;
+        size_t begin = 1;
+        size_t end = 0;
+
+        bool empty() const {
+            return Incr(end) == begin;
+        }
+
+        void push(const T &elem) {
+            if (Incr(end, 2) == begin) {
+                std::cout << "Queue full" << std::endl;
+                exit(1);
+            }
+            end = Incr(end);
+            arr[end] = elem;
+        }
+
+        void pop() {
+            if (empty()) {
+                std::cout << "Queue empty" << std::endl;
+                exit(1);
+            }
+            begin = Incr(begin);
+        }
+
+
+        T &front() {
+            if (empty()) {
+                std::cout << "Queue empty" << std::endl;
+                exit(1);
+            }
+            return arr[begin];
+        }
+
+        size_t size() const {
+            if (empty()) {
+                return 0;
+            }
+            if (end >= begin) {
+                return end - begin + 1;
+            }
+            return end + ArraySize - begin + 1;
+        }
+    private:
+        static size_t Incr(size_t x, size_t y = 1) {
+            return ((x + y) % ArraySize);
+        }
+    };
 
 public:
     void Init(size_t thread_cnt = 16, size_t quota = 2) {
@@ -158,13 +211,41 @@ public:
 
     template<typename T>
     void PushRetired(T *ptr, const std::function<void(void *)> &deleter) {
+        thread_local std::array<T*, kMustTryFree> protected_local;
+        thread_local size_t protected_local_len = 0;
+        thread_local size_t expire = 0;
+        thread_local CircularQueue<RetiredBlock, 300> temp_queue;
+
         if (!ptr) {
             return;
         }
-        if (retired_queue_.size() >= kMaxRetiredLen) {
-            TryFreeSomeBlock();
+
+        if (temp_queue.size() >= kMaxRetiredLen) {
+            if (expire == 0) {
+                ReloadProtected(protected_local, protected_local_len);
+                expire = temp_queue.size();
+            }
+            expire--;
+            T *p = (T*)temp_queue.front().ptr_;
+            if (NotIn(p, protected_local, protected_local_len)) {
+                temp_queue.front().Free();
+            } else {
+                temp_queue.push(temp_queue.front());
+            }
+            temp_queue.pop();
         }
-        retired_queue_.push(RetiredBlock((void *) ptr, deleter));
+
+        RetiredBlock block((void *)ptr, deleter);
+        temp_queue.push(block);
+
+        // if (retired_queue_.size() >= kMaxRetiredLen) {
+            // TryFreeSomeBlock();
+            // for (size_t i = 0; i < 32 && !retired_queue_.empty(); i++) {
+            //     retired_queue_.front().Free();
+            //     retired_queue_.pop();
+            // }
+        // }
+        // retired_queue_.push(RetiredBlock((void *) ptr, deleter));
     }
 
 private:
@@ -191,6 +272,28 @@ private:
                 blocks[i].Free();
             }
         }
+    }
+
+    template <typename T>
+    void ReloadProtected(std::array<T*, kMustTryFree> &p, size_t &len) {
+        len = 0;
+        for (size_t i = 0; i < ProtectedSize(); i++) {
+            T *ptr = (T*)protected_[i]->haz_ptr_.load(std::memory_order_acquire);
+            if (ptr) {
+                p[len] = ptr;
+                len++;
+            }
+        }
+    }
+
+    template <typename T>
+    bool NotIn(T *ptr, const std::array<T*, kMustTryFree> &v, size_t len) {
+        for (size_t i = 0; i < len; i++) {
+            if (ptr == v[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     bool IsNotProtected(uintptr_t ptr) {
