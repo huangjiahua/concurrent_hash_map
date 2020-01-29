@@ -105,7 +105,11 @@ class DataNode : public TreeNode {
     template<typename T> using Atom = std::atomic<T>;
 public:
 public:
-    DataNode(const KeyType &key, const ValueType &value) : kv_pair_{key, value} {}
+    DataNode(const KeyType &key, const ValueType &value) : kv_pair_{key, value}
+#ifndef DISABLE_INPLACE_UPDATE
+            , seq_lock_{0}
+#endif
+    {}
 
     TreeNodeType Type() const override {
         return TreeNodeType::DATA_NODE;
@@ -116,6 +120,14 @@ public:
     }
 
     KVPair kv_pair_;
+#ifndef DISABLE_INPLACE_UPDATE
+
+    size_t GetVersion() {
+        return seq_lock_.load(std::memory_order_acquire);
+    }
+
+    Atom<size_t> seq_lock_;
+#endif
 };
 
 template<size_t LEN>
@@ -539,7 +551,7 @@ class ConcurrentHashMap {
 public:
     ConcurrentHashMap(size_t root_size, size_t max_depth, size_t thread_cnt = 32)
 #ifndef DISABLE_FAST_TABLE
-            : ft_(65536), stat_(0)
+    : ft_(65536), stat_(0)
 #endif
     {
         root_size_ = util::nextPowerOf2(root_size);
@@ -629,16 +641,22 @@ public:
             }
         }
 #endif
-        DataNodeT *new_node = (DataNodeT *) Allocator().allocate(sizeof(DataNodeT));
-        new(new_node) DataNodeT(k, v);
-        std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> ptr(new_node, [](DataNodeT *n) {
-            n->~DataNode();
-            Allocator().deallocate((uint8_t *) n, sizeof(DataNodeT));
-        });
+        auto ptr = AllocateDataNodePtr(k, v);
 
-        auto res = DoInsert(h, k, ptr, type);
+        auto res = DoInsert(h, k, v, ptr, type);
         return res;
     }
+
+#ifndef DISABLE_INPLACE_UPDATE
+
+    bool InplaceUpdate(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
+        size_t h = HashFn()(k);
+        auto ptr = NullDataNodePtr();
+        auto res = DoInsert(h, k, v, ptr, type, true);
+        return false;
+    }
+
+#endif
 
     bool Find(const KeyType &k, ValueType &v) {
         size_t h = HashFn()(k);
@@ -669,7 +687,17 @@ public:
                 case TreeNodeType::DATA_NODE: {
                     DataNodeT *d_node = static_cast<DataNodeT *>(node);
                     if (KeyEqual()(d_node->kv_pair_.first, k)) {
+#ifndef DISABLE_INPLACE_UPDATE
+                        size_t ver1 = 0;
+                        size_t ver2 = 0;
+                        do {
+                            ver1 = d_node->GetVersion();
+                            v = d_node->kv_pair_.second;
+                            ver2 = d_node->GetVersion();
+                        } while (ver1 != ver2);
+#else
                         v = d_node->kv_pair_.second;
+#endif
                         return true;
                     } else {
                         return false;
@@ -749,8 +777,30 @@ private:
         }
     }
 
-    bool DoInsert(size_t h, const KeyType &k, std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> &ptr,
-                  InsertType type) {
+    std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
+    AllocateDataNodePtr(const KeyType &k, const ValueType &v) {
+        DataNodeT *new_node = (DataNodeT *) Allocator().allocate(sizeof(DataNodeT));
+        new(new_node) DataNodeT(k, v);
+        std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
+                ptr(new_node,
+                    [](DataNodeT *n) {
+                        n->~DataNode();
+                        Allocator().deallocate((uint8_t *) n, sizeof(DataNodeT));
+                    });
+        return ptr;
+    }
+
+
+    std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
+    NullDataNodePtr() {
+        std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
+                ptr(nullptr, [](DataNodeT *n) {});
+        return ptr;
+    }
+
+    bool DoInsert(size_t h, const KeyType &k, const ValueType &v,
+                  std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> &ptr,
+                  InsertType type, bool ipu = false) {
         size_t n = 0;
 
         size_t idx = GetRootIdx(h);
@@ -763,6 +813,10 @@ private:
             if (!node) {
                 if (type == InsertType::MUST_EXIST) {
                     return false;
+                }
+
+                if (ipu && !ptr.get()) {
+                    ptr = AllocateDataNodePtr(k, v);
                 }
 
                 bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) ptr.get(),
@@ -781,12 +835,31 @@ private:
                     }
                     DataNodeT *d_node = static_cast<DataNodeT *>(node);
                     if (KeyEqual()(d_node->kv_pair_.first, k)) {
-                        bool result = node_ptr->compare_exchange_strong(node, ptr.get(), std::memory_order_acq_rel);
-                        if (!result) {
-                            continue;
+                        if (!ipu) {
+                            bool result = node_ptr->compare_exchange_strong(node, ptr.get(), std::memory_order_acq_rel);
+                            if (!result) {
+                                continue;
+                            }
+                            ptr.release();
+                            HazPtrRetire(d_node);
+                        } else {
+#ifndef DISABLE_INPLACE_UPDATE
+                            bool hold = false;
+                            size_t seq = 0;
+                            do {
+                                do {
+                                    seq = d_node->GetVersion();
+                                } while (seq & 1ull); // while seq is odd, means it is being locked
+                                hold = d_node->seq_lock_.compare_exchange_strong(seq, seq + 1,
+                                                                                 std::memory_order_acq_rel);
+                            } while (!hold);
+                            d_node->kv_pair_.second = v;
+                            d_node->seq_lock_.store(seq + 2);
+#else
+                            std::cout << "Shouldn't be here" << std::endl;
+                            exit(1);
+#endif
                         }
-                        ptr.release();
-                        HazPtrRetire(d_node);
                         return true;
                     } else {
                         if (n < max_depth_ - 1) {
@@ -796,6 +869,10 @@ private:
                             size_t next_idx = GetNthIdx(h, n + 1);
 
                             tmp_arr_ptr->array_[tmp_idx].store(node, std::memory_order_relaxed);
+
+                            if (ipu && !ptr.get()) {
+                                ptr = AllocateDataNodePtr(k, v);
+                            }
 
                             if (next_idx != tmp_idx) {
                                 tmp_arr_ptr->array_[next_idx].store(ptr.get(), std::memory_order_relaxed);

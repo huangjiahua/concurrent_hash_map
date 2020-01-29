@@ -19,6 +19,7 @@ struct HMBConfig {
     double zipf_factor = 0.99;
     bool only_tp = false;
     bool uniform = false;
+    bool inplace = false;
 
     void LoadConfig(int argc, const char *argv[]) {
         for (int i = 1; i < argc; i++) {
@@ -80,6 +81,12 @@ struct HMBConfig {
                 }
                 i++;
                 uniform = true;
+            } else if (arg == "--inplace") {
+                if (i + 1 > argc) {
+                    Panic("param error");
+                }
+                i++;
+                inplace = true;
             } else {
                 Panic("param error");
             }
@@ -122,7 +129,7 @@ int main(int argc, const char *argv[]) {
     vector<thread> threads(config.thread_count);
     vector<size_t> times(config.thread_count, 0);
 
-    auto worker = [per_thread_task](size_t idx, Map &map, uint64_t *keys, int *coins, size_t &time) {
+    auto worker = [per_thread_task, config](size_t idx, Map &map, uint64_t *keys, int *coins, size_t &time) {
         auto t = SystemTime::Now();
         uint64_t value = 0;
         for (size_t i = 0; i < kROUND; i++) {
@@ -130,7 +137,15 @@ int main(int argc, const char *argv[]) {
                 if (coins[j]) {
                     map.Find(keys[j], value);
                 } else {
-                    map.Insert(keys[j], keys[j] + idx);
+                    if (config.inplace) {
+#ifndef DISABLE_INPLACE_UPDATE
+                        map.InplaceUpdate(keys[j], keys[j] + idx);
+#else
+                        map.Insert(keys[j], keys[j] + idx);
+#endif
+                    } else {
+                        map.Insert(keys[j], keys[j] + idx);
+                    }
                 }
             }
         }

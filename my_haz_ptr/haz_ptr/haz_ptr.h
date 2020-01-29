@@ -31,6 +31,7 @@
 #include <iostream>
 #include <mutex>
 #include <cassert>
+#include <array>
 
 template<typename T>
 struct DefaultDeleter {
