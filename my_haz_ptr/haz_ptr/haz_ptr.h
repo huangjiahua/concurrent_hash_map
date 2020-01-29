@@ -215,29 +215,28 @@ public:
         thread_local std::array<T*, kMustTryFree> protected_local;
         thread_local size_t protected_local_len = 0;
         thread_local size_t expire = 0;
-        thread_local CircularQueue<RetiredBlock, 300> temp_queue;
 
         if (!ptr) {
             return;
         }
 
-        if (temp_queue.size() >= kMaxRetiredLen) {
+        if (retired_queue_.size() >= kMaxRetiredLen) {
             if (expire == 0) {
                 ReloadProtected(protected_local, protected_local_len);
-                expire = temp_queue.size();
+                expire = retired_queue_.size();
             }
             expire--;
-            T *p = (T*)temp_queue.front().ptr_;
+            T *p = (T*)retired_queue_.front().ptr_;
             if (NotIn(p, protected_local, protected_local_len)) {
-                temp_queue.front().Free();
+                retired_queue_.front().Free();
             } else {
-                temp_queue.push(temp_queue.front());
+                retired_queue_.push(retired_queue_.front());
             }
-            temp_queue.pop();
+            retired_queue_.pop();
         }
 
         RetiredBlock block((void *)ptr, deleter);
-        temp_queue.push(block);
+        retired_queue_.push(block);
 
         // if (retired_queue_.size() >= kMaxRetiredLen) {
             // TryFreeSomeBlock();
