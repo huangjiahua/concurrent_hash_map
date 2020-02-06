@@ -2,6 +2,7 @@
 
 #include <utility>
 #include <iostream>
+#include <algorithm>
 
 #include "concurrent_dict.h"
 #include "my_haz_ptr/haz_ptr.h"
@@ -119,19 +120,22 @@ struct DataNode : TreeNode {
 
     Slice Value() { return Slice(data_ + key_size_, val_size_); }
 
-    void CopyValue(const char *dst, size_t n) {
+    void CopyValue(std::string &buf) {
         uint32_t seq;
-        n = std::min((size_t) val_size_, n);
         do {
             do {
                 seq = seq_lock_.load(std::memory_order_acquire);
             } while (seq & 1u);
-            memcpy((void *) dst, data_ + key_size_, n);
+            size_t n = std::min((size_t) val_size_, capacity_ - (size_t) key_size_);
+            buf.resize(n, ' ');
+            std::memcpy((void *) buf.data(), data_ + key_size_, n);
         } while (seq_lock_.load(std::memory_order_acquire) != seq);
     }
 
     bool UpdateValue(const Slice &v) {
-        if (v.size() > val_size_) {
+        // capacity_ and key_size_ are constants, so it is thread-safe to
+        // access them
+        if (v.size() > capacity_ - key_size_) {
             return false;
         }
         uint32_t seq;
@@ -166,8 +170,8 @@ struct DataNode : TreeNode {
         Allocator().deallocate((uint8_t *) this, sizeof(*this) + capacity_);
     }
 
-    size_t capacity_;
-    uint32_t key_size_;
+    const size_t capacity_;
+    const uint32_t key_size_;
     uint32_t val_size_;
     Atom<uint32_t> seq_lock_;
     char data_[1]{};
@@ -469,11 +473,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Find(const concurrent_dict::Slic
                 auto *d_node = (DataNode *) node;
                 if (k == d_node->Key()) {
                     if (v) {
-                        size_t val_size = d_node->Value().size();
-                        if (v->size() != val_size) {
-                            v->append(val_size - v->size(), ' ');
-                        }
-                        d_node->CopyValue(v->data(), val_size);
+                        d_node->CopyValue(*v);
                     }
                     return true;
                 } else {
