@@ -14,3 +14,5 @@ endif()
 if(${DISABLE_INPLACE_UPDATE})
     target_compile_definitions(hash_map_bench PUBLIC DISABLE_INPLACE_UPDATE)
 endif()
+
+add_executable(dict_bench dict/concurrent_dict.cpp dict/dict_bench.cpp)
