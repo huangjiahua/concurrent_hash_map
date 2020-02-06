@@ -91,10 +91,15 @@ enum class TreeNodeType {
 };
 
 struct TreeNode {
+    static constexpr uintptr_t kValidPtrField = 0x0000ffffffffffffull;
 public:
     virtual TreeNodeType Type() const = 0;
 
     virtual ~TreeNode() = default;
+
+    static TreeNode *FilterValidPtr(TreeNode *tnp) {
+        return (TreeNode *) ((uintptr_t) tnp & kValidPtrField);
+    }
 };
 
 struct DataNode : TreeNode {
@@ -184,6 +189,7 @@ struct ArrayNode : TreeNode {
         for (size_t j = 0; j < kArrayNodeLen; j++) {
             ret->array_[j].store(nullptr);
         }
+        new(ret) ArrayNode;
         return ret;
     }
 
@@ -197,6 +203,7 @@ struct ArrayNode : TreeNode {
     void RecursiveFree() {
         for (size_t j = 0; j < kArrayNodeLen; j++) {
             TreeNode *ptr = array_[j].load(std::memory_order_relaxed);
+            ptr = TreeNode::FilterValidPtr(ptr);
             if (!ptr) {
                 continue;
             }
@@ -249,14 +256,9 @@ private:
         return ((uintptr_t) tnp) & kHighestBit;
     }
 
-    static TreeNode *FilterValidPtr(TreeNode *tnp) {
-        return (TreeNode *) ((uintptr_t) tnp & kValidPtrField);
-    }
-
     static TreeNode *MarkArrayNode(ArrayNode *anp) {
         return (TreeNode *) (((uintptr_t) anp) | kHighestBit);
     }
-
 
     static std::unique_ptr<ArrayNode, std::function<void(ArrayNode *)>>
     SafeArrayNodePtr() {
@@ -318,6 +320,7 @@ concurrent_dict::ConcurrentDict::DictImpl::~DictImpl() = default;
 void concurrent_dict::ConcurrentDict::DictImpl::Free() {
     for (size_t j = 0; j < root_size_; j++) {
         TreeNode *ptr = root_[j].load(std::memory_order_relaxed);
+        ptr = TreeNode::FilterValidPtr(ptr);
         if (!ptr) {
             continue;
         }
@@ -342,7 +345,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Sl
     auto data_ptr = SafeNullDataNodePtr();
 
     while (true) {
-        node = holder.Repin(*node_ptr, IsArrayNode, FilterValidPtr);
+        node = holder.Repin(*node_ptr, IsArrayNode, TreeNode::FilterValidPtr);
 
         if (!node) {
             if (insert_type == InsertType::MUST_EXIST) {
@@ -431,7 +434,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Sl
             case TreeNodeType::ARRAY_NODE: {
                 n++;
                 holder.Reset();
-                auto arr_node = (ArrayNode*)node;
+                auto arr_node = (ArrayNode *) node;
                 size_t curr_idx = GetNthIdx(h, n);
                 node_ptr = &arr_node->array_[curr_idx];
                 continue;
@@ -455,7 +458,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Find(const concurrent_dict::Slic
     HazPtrHolder holder;
 
     while (true) {
-        node = holder.Repin(*node_ptr, IsArrayNode, FilterValidPtr);
+        node = holder.Repin(*node_ptr, IsArrayNode, TreeNode::FilterValidPtr);
 
         if (!node) {
             break;

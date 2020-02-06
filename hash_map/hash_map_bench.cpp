@@ -1,7 +1,11 @@
 //
 // Created by jiahua on 2019/10/24.
 //
+#ifdef USE_DICT
+#include "hash_map/dict_test_wrapper.h"
+#else
 #include "hash_map/concurrent_hash_map.h"
+#endif
 #include "general_bench.h"
 #include <vector>
 #include <fstream>
@@ -95,7 +99,11 @@ struct HMBConfig {
 };
 
 using namespace std;
+#ifdef USE_DICT
+using Map = DictTestWrapper;
+#else
 using Map = ConcurrentHashMap<uint64_t, uint64_t, std::hash<uint64_t>, std::equal_to<>>;
+#endif
 
 constexpr static size_t kROUND = 10;
 
@@ -105,9 +113,15 @@ int main(int argc, const char *argv[]) {
     RandomGenerator rng;
     size_t per_thread_task = config.operations / config.thread_count;
 
+#ifdef USE_DICT
+    concurrent_dict::ConcurrentDict dict(config.initial_size, config.max_depth, config.thread_count);
+    DictTestWrapper map(&dict);
+#else
     ConcurrentHashMap<uint64_t, uint64_t, std::hash<uint64_t>, std::equal_to<>> map(config.initial_size,
                                                                                     config.max_depth,
                                                                                     config.thread_count);
+#endif
+
     for (size_t i = 0; i < config.operations; i++) {
         if (config.uniform) {
             map.Insert(rng.Gen<uint64_t>(0, config.key_range), 0);
