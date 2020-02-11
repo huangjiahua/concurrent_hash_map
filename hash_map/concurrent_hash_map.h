@@ -653,7 +653,7 @@ public:
         size_t h = HashFn()(k);
         auto ptr = NullDataNodePtr();
         auto res = DoInsert(h, k, v, ptr, type, true);
-        return false;
+        return res;
     }
 
 #endif
