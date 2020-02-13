@@ -108,8 +108,8 @@ private:
 };
 
 struct RetiredBlock {
-    void *ptr_;
     std::function<void(void *)> deleter_;
+    void *ptr_;
 
     RetiredBlock() : ptr_(nullptr), deleter_() {}
 
@@ -124,7 +124,7 @@ struct RetiredBlock {
 class HazPtrHolder;
 
 class HazPtrDomain {
-    constexpr static size_t kMaxRetiredLen = 255;
+    constexpr static size_t kMaxRetiredLen = 511;
     constexpr static size_t kMustTryFree = 128;
     constexpr static uintptr_t kValidPtrField = 0x0000ffffffffffffull;
 
@@ -213,6 +213,7 @@ public:
     template<typename T>
     void PushRetired(T *ptr, const std::function<void(void *)> &deleter) {
         thread_local std::array<T*, kMustTryFree> protected_local;
+        thread_local CircularQueue<RetiredBlock, 1 + 2 * kMaxRetiredLen> inner_queue_;
         thread_local size_t protected_local_len = 0;
         thread_local size_t expire = 0;
 
@@ -220,23 +221,23 @@ public:
             return;
         }
 
-        if (retired_queue_.size() >= kMaxRetiredLen) {
+        if (inner_queue_.size() >= kMaxRetiredLen) {
             if (expire == 0) {
                 ReloadProtected(protected_local, protected_local_len);
-                expire = retired_queue_.size();
+                expire = inner_queue_.size();
             }
             expire--;
-            T *p = (T*)retired_queue_.front().ptr_;
+            T *p = (T*)inner_queue_.front().ptr_;
             if (NotIn(p, protected_local, protected_local_len)) {
-                retired_queue_.front().Free();
+                inner_queue_.front().Free();
             } else {
-                retired_queue_.push(retired_queue_.front());
+                inner_queue_.push(inner_queue_.front());
             }
-            retired_queue_.pop();
+            inner_queue_.pop();
         }
 
         RetiredBlock block((void *)ptr, deleter);
-        retired_queue_.push(block);
+        inner_queue_.push(block);
 
         // if (retired_queue_.size() >= kMaxRetiredLen) {
             // TryFreeSomeBlock();
@@ -287,7 +288,7 @@ private:
     }
 
     template <typename T>
-    bool NotIn(T *ptr, const std::array<T*, kMustTryFree> &v, size_t len) {
+    bool NotIn(const T *ptr, const std::array<T*, kMustTryFree> &v, size_t len) {
         for (size_t i = 0; i < len; i++) {
             if (ptr == v[i]) {
                 return false;
