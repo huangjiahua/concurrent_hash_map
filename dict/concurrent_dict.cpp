@@ -248,6 +248,8 @@ public:
 private:
     static size_t Hash(const Slice &s);
 
+    bool DoInsert(const Slice &k, const Slice &v, InsertType insert_type, bool del);
+
     size_t GetRootIdx(size_t h) const { return (h & (root_size_ - 1)); }
 
     size_t GetNthIdx(size_t h, size_t n) const {
@@ -272,7 +274,10 @@ private:
     }
 
     static std::unique_ptr<DataNode, std::function<void(DataNode *)>>
-    SafeDataNodePtr(const Slice &k, const Slice &v) {
+    SafeDataNodePtr(const Slice &k, const Slice &v, bool del) {
+        if (del) {
+            return SafeNullDataNodePtr();
+        }
         return std::unique_ptr<DataNode, std::function<void(DataNode *)>>(
                 DataNode::NewDataNode(k, v), [](DataNode *p) { p->Free(); }
         );
@@ -337,9 +342,9 @@ void concurrent_dict::ConcurrentDict::DictImpl::Free() {
     Allocator().deallocate((uint8_t *) this, sizeof(*this) + sizeof(TreeNode *) * root_size_);
 }
 
-bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Slice &k,
-                                                       const concurrent_dict::Slice &v,
-                                                       concurrent_dict::InsertType insert_type) {
+bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::Slice &k,
+                                                         const concurrent_dict::Slice &v,
+                                                         concurrent_dict::InsertType insert_type, bool del) {
     size_t h = Hash(k);
     size_t n = 0;
     size_t idx = GetRootIdx(h);
@@ -357,7 +362,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Sl
             }
 
             if (!data_ptr) {
-                data_ptr = SafeDataNodePtr(k, v);
+                data_ptr = SafeDataNodePtr(k, v, del);
             }
 
             bool res = node_ptr->compare_exchange_strong(node, (TreeNode *) data_ptr.get(),
@@ -372,18 +377,18 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Sl
         assert(node);
         switch (node->Type()) {
             case TreeNodeType::DATA_NODE: {
-                if (insert_type == InsertType::MUST_EXIST) {
-                    return false;
-                }
-
                 auto d_node = (DataNode *) node;
                 if (k == d_node->Key()) {
-                    if (d_node->UpdateValue(v)) { // In-place update
+                    if (insert_type == InsertType::DOES_NOT_EXIST) {
+                        return false;
+                    }
+
+                    if (!del && d_node->UpdateValue(v)) { // In-place update
                         return true;
                     }
 
                     if (!data_ptr) {
-                        data_ptr = SafeDataNodePtr(k, v);
+                        data_ptr = SafeDataNodePtr(k, v, del);
                     }
 
                     bool res = node_ptr->compare_exchange_strong(node, (TreeNode *) data_ptr.get(),
@@ -408,7 +413,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Sl
                         new_arr_ptr->array_[d_node_idx].store(node, std::memory_order_release);
 
                         if (!data_ptr) {
-                            data_ptr = SafeDataNodePtr(k, v);
+                            data_ptr = SafeDataNodePtr(k, v, del);
                         }
 
                         if (d_node_idx != new_node_idx) {
@@ -450,6 +455,12 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Sl
     }
 
     return false;
+}
+
+inline bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Slice &k,
+                                                       const concurrent_dict::Slice &v,
+                                                       concurrent_dict::InsertType insert_type) {
+    return DoInsert(k, v, insert_type, false);
 }
 
 bool concurrent_dict::ConcurrentDict::DictImpl::Find(const concurrent_dict::Slice &k, std::string *v) {
@@ -497,8 +508,8 @@ bool concurrent_dict::ConcurrentDict::DictImpl::Find(const concurrent_dict::Slic
     return false;
 }
 
-bool concurrent_dict::ConcurrentDict::DictImpl::Delete(const concurrent_dict::Slice &k, std::string *v) {
-    return false;
+inline bool concurrent_dict::ConcurrentDict::DictImpl::Delete(const concurrent_dict::Slice &k, std::string *v) {
+    return DoInsert(k, Slice(""), InsertType::MUST_EXIST, true);
 }
 
 
