@@ -609,7 +609,7 @@ public:
 #endif
 
     bool Delete(const KeyType &k) {
-        return DoInsert(nullptr, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST);
+        return DoInsert(&k, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST);
     }
 
 
@@ -783,7 +783,7 @@ private:
 
     std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
     AllocateDataNodePtr(const KeyType *k, const ValueType *v, std::queue<DataNodeT*> *pq = nullptr) {
-        if (!k) {
+        if (!v) {
             return NullDataNodePtr();
         }
         DataNodeT *new_node = nullptr;
