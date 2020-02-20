@@ -609,7 +609,7 @@ public:
 #endif
 
     bool Delete(const KeyType &k) {
-        return DoInsert(&k, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST);
+        return DoInsert(&k, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST, false);
     }
 
 
@@ -818,6 +818,8 @@ private:
     bool DoInsert(size_t h, const KeyType *k, const ValueType *v,
                   std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> &ptr,
                   InsertType type, bool ipu = false) {
+        assert(k);
+        assert((!v && !ipu) || v);
 #ifdef ENABLE_CACHE_DATA_NODE
         thread_local std::queue<DataNodeT*> cached_data_node_;
 #endif
@@ -854,11 +856,13 @@ private:
 
             switch (node->Type()) {
                 case TreeNodeType::DATA_NODE: {
-                    if (type == InsertType::DOES_NOT_EXIST) {
-                        return false;
-                    }
+
                     DataNodeT *d_node = static_cast<DataNodeT *>(node);
                     if (KeyEqual()(d_node->kv_pair_.first, *k)) {
+                        if (type == InsertType::DOES_NOT_EXIST) {
+                            return false;
+                        }
+
                         if (!ipu) {
                             if (!ptr.get()) {
 #ifdef ENABLE_CACHE_DATA_NODE
