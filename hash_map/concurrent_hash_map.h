@@ -608,6 +608,10 @@ public:
     }
 #endif
 
+    bool Delete(const KeyType &k) {
+        return DoInsert(nullptr, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST);
+    }
+
 
     bool Insert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
         size_t h = HashFn()(k);
@@ -641,9 +645,9 @@ public:
             }
         }
 #endif
-        auto ptr = AllocateDataNodePtr(k, v);
+        auto ptr = NullDataNodePtr();
 
-        auto res = DoInsert(h, k, v, ptr, type);
+        auto res = DoInsert(h, &k, &v, ptr, type);
         return res;
     }
 
@@ -652,7 +656,7 @@ public:
     bool InplaceUpdate(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
         size_t h = HashFn()(k);
         auto ptr = NullDataNodePtr();
-        auto res = DoInsert(h, k, v, ptr, type, true);
+        auto res = DoInsert(h, &k, &v, ptr, type, true);
         return res;
     }
 
@@ -778,14 +782,27 @@ private:
     }
 
     std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
-    AllocateDataNodePtr(const KeyType &k, const ValueType &v) {
-        DataNodeT *new_node = (DataNodeT *) Allocator().allocate(sizeof(DataNodeT));
-        new(new_node) DataNodeT(k, v);
+    AllocateDataNodePtr(const KeyType *k, const ValueType *v, std::queue<DataNodeT*> *pq = nullptr) {
+        if (!k) {
+            return NullDataNodePtr();
+        }
+        DataNodeT *new_node = nullptr;
+        if (pq && !pq->empty()) {
+            new_node = pq->front();
+            pq->pop();
+        } else {
+            new_node = (DataNodeT *) Allocator().allocate(sizeof(DataNodeT));
+        }
+        new(new_node) DataNodeT(*k, *v);
         std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
                 ptr(new_node,
-                    [](DataNodeT *n) {
+                    [pq](DataNodeT *n) {
                         n->~DataNode();
-                        Allocator().deallocate((uint8_t *) n, sizeof(DataNodeT));
+                        if (pq) {
+                            pq->push(n);
+                        } else {
+                            Allocator().deallocate((uint8_t *) n, sizeof(DataNodeT));
+                        }
                     });
         return ptr;
     }
@@ -798,9 +815,12 @@ private:
         return ptr;
     }
 
-    bool DoInsert(size_t h, const KeyType &k, const ValueType &v,
+    bool DoInsert(size_t h, const KeyType *k, const ValueType *v,
                   std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> &ptr,
                   InsertType type, bool ipu = false) {
+#ifdef ENABLE_CACHE_DATA_NODE
+        thread_local std::queue<DataNodeT*> cached_data_node_;
+#endif
         size_t n = 0;
 
         size_t idx = GetRootIdx(h);
@@ -815,8 +835,12 @@ private:
                     return false;
                 }
 
-                if (ipu && !ptr.get()) {
+                if (!ptr.get()) {
+#ifdef ENABLE_CACHE_DATA_NODE
+                    ptr = AllocateDataNodePtr(k, v, &cached_data_node_);
+#else
                     ptr = AllocateDataNodePtr(k, v);
+#endif
                 }
 
                 bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) ptr.get(),
@@ -834,14 +858,28 @@ private:
                         return false;
                     }
                     DataNodeT *d_node = static_cast<DataNodeT *>(node);
-                    if (KeyEqual()(d_node->kv_pair_.first, k)) {
+                    if (KeyEqual()(d_node->kv_pair_.first, *k)) {
                         if (!ipu) {
+                            if (!ptr.get()) {
+#ifdef ENABLE_CACHE_DATA_NODE
+                                ptr = AllocateDataNodePtr(k, v, &cached_data_node_);
+#else
+                                ptr = AllocateDataNodePtr(k, v);
+#endif
+                            }
                             bool result = node_ptr->compare_exchange_strong(node, ptr.get(), std::memory_order_acq_rel);
                             if (!result) {
                                 continue;
                             }
                             ptr.release();
+#ifdef ENABLE_CACHE_DATA_NODE
+                            std::queue<DataNodeT*> *pq = &cached_data_node_;
+                            HazPtrRetire(d_node, [pq](void *p) {
+                                pq->push((DataNodeT*)p);
+                            });
+#else
                             HazPtrRetire(d_node);
+#endif
                         } else {
 #ifndef DISABLE_INPLACE_UPDATE
                             bool hold = false;
@@ -853,7 +891,7 @@ private:
                                 hold = d_node->seq_lock_.compare_exchange_strong(seq, seq + 1,
                                                                                  std::memory_order_acq_rel);
                             } while (!hold);
-                            d_node->kv_pair_.second = v;
+                            d_node->kv_pair_.second = *v;
                             d_node->seq_lock_.store(seq + 2);
 #else
                             std::cout << "Shouldn't be here" << std::endl;
@@ -870,8 +908,12 @@ private:
 
                             tmp_arr_ptr->array_[tmp_idx].store(node, std::memory_order_relaxed);
 
-                            if (ipu && !ptr.get()) {
+                            if (!ptr.get()) {
+#ifdef ENABLE_CACHE_DATA_NODE
+                                ptr = AllocateDataNodePtr(k, v, &cached_data_node_);
+#else
                                 ptr = AllocateDataNodePtr(k, v);
+#endif
                             }
 
                             if (next_idx != tmp_idx) {
@@ -881,7 +923,7 @@ private:
                             bool result = node_ptr->compare_exchange_strong(node, MarkArrayNode(tmp_arr_ptr.get()),
                                                                             std::memory_order_acq_rel);
 
-                            if (next_idx != tmp_idx) {
+                            if (result && next_idx != tmp_idx) {
                                 ptr.release();
                                 tmp_arr_ptr.release();
                                 return true;
@@ -928,4 +970,3 @@ private:
     size_t root_bits_{0};
     size_t max_depth_{0};
 };
-
