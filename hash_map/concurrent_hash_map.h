@@ -609,9 +609,9 @@ public:
 #endif
 
     bool Delete(const KeyType &k) {
-        return DoInsert(&k, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST, false);
+        auto ptr = NullDataNodePtr();
+        return DoInsert(HashFn()(k), &k, nullptr, ptr, InsertType::MUST_EXIST, false);
     }
-
 
     bool Insert(const KeyType &k, const ValueType &v, InsertType type = InsertType::ANY) {
         size_t h = HashFn()(k);
