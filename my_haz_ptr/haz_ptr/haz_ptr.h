@@ -33,6 +33,62 @@
 #include <cassert>
 #include <array>
 
+template <typename T, size_t N> 
+struct CircularQueue {
+    constexpr static size_t ArraySize = N + 1;
+    std::array<T, ArraySize> arr;
+    size_t begin = 1;
+    size_t end = 0;
+
+    bool full() const {
+        return Incr(end, 2) == begin;
+    }
+
+    bool empty() const {
+        return Incr(end) == begin;
+    }
+
+    void push(const T &elem) {
+        if (Incr(end, 2) == begin) {
+            std::cout << "Queue full" << std::endl;
+            exit(1);
+        }
+        end = Incr(end);
+        arr[end] = elem;
+    }
+
+    void pop() {
+        if (empty()) {
+            std::cout << "Queue empty" << std::endl;
+            exit(1);
+        }
+        begin = Incr(begin);
+    }
+
+
+    T &front() {
+        if (empty()) {
+            std::cout << "Queue empty" << std::endl;
+            exit(1);
+        }
+        return arr[begin];
+    }
+
+    size_t size() const {
+        if (empty()) {
+            return 0;
+        }
+        if (end >= begin) {
+            return end - begin + 1;
+        }
+        return end + ArraySize - begin + 1;
+    }
+private:
+    static size_t Incr(size_t x, size_t y = 1) {
+        return ((x + y) % ArraySize);
+    }
+};
+
 template<typename T>
 struct DefaultDeleter {
     DefaultDeleter() = default;
@@ -142,57 +198,7 @@ private:
     static thread_local std::queue<RetiredBlock> retired_queue_;
 
 private:
-    template <typename T, size_t N> 
-    struct CircularQueue {
-        constexpr static size_t ArraySize = N + 1;
-        std::array<T, ArraySize> arr;
-        size_t begin = 1;
-        size_t end = 0;
 
-        bool empty() const {
-            return Incr(end) == begin;
-        }
-
-        void push(const T &elem) {
-            if (Incr(end, 2) == begin) {
-                std::cout << "Queue full" << std::endl;
-                exit(1);
-            }
-            end = Incr(end);
-            arr[end] = elem;
-        }
-
-        void pop() {
-            if (empty()) {
-                std::cout << "Queue empty" << std::endl;
-                exit(1);
-            }
-            begin = Incr(begin);
-        }
-
-
-        T &front() {
-            if (empty()) {
-                std::cout << "Queue empty" << std::endl;
-                exit(1);
-            }
-            return arr[begin];
-        }
-
-        size_t size() const {
-            if (empty()) {
-                return 0;
-            }
-            if (end >= begin) {
-                return end - begin + 1;
-            }
-            return end + ArraySize - begin + 1;
-        }
-    private:
-        static size_t Incr(size_t x, size_t y = 1) {
-            return ((x + y) % ArraySize);
-        }
-    };
 
 public:
     void Init(size_t thread_cnt = 16, size_t quota = 2) {

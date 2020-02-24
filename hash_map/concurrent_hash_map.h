@@ -609,7 +609,8 @@ public:
 #endif
 
     bool Delete(const KeyType &k) {
-        return DoInsert(&k, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST);
+        size_t h = HashFn()(k);
+        return DoInsert(h, k, nullptr, NullDataNodePtr(), InsertType::MUST_EXIST);
     }
 
 
@@ -782,7 +783,7 @@ private:
     }
 
     std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
-    AllocateDataNodePtr(const KeyType *k, const ValueType *v, std::queue<DataNodeT*> *pq = nullptr) {
+    AllocateDataNodePtr(const KeyType *k, const ValueType *v, CircularQueue<DataNodeT*, 128> *pq = nullptr) {
         if (!v) {
             return NullDataNodePtr();
         }
@@ -798,7 +799,7 @@ private:
                 ptr(new_node,
                     [pq](DataNodeT *n) {
                         n->~DataNode();
-                        if (pq) {
+                        if (pq && !pq->full()) {
                             pq->push(n);
                         } else {
                             Allocator().deallocate((uint8_t *) n, sizeof(DataNodeT));
@@ -819,7 +820,7 @@ private:
                   std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>> &ptr,
                   InsertType type, bool ipu = false) {
 #ifdef ENABLE_CACHE_DATA_NODE
-        thread_local std::queue<DataNodeT*> cached_data_node_;
+        thread_local CircularQueue<DataNodeT*, 128> cached_data_node_;
 #endif
         size_t n = 0;
 
