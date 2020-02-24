@@ -20,5 +20,14 @@ int main() {
         assert(res);
         assert(val == "0");
     }
+    
+    for (int i = 0; i < round; i++) {
+        string key = to_string(i);
+        auto res = dict.Delete(Slice(key), nullptr);
+        assert(res);
+        string val;
+        res = dict.Find(Slice(key), &val);
+        assert(!res);
+    }
     return 0;
 }
