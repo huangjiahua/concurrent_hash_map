@@ -128,7 +128,7 @@ struct DataNode : TreeNode {
             } while (seq & 1u);
             size_t n = std::min((size_t) val_size_, capacity_ - (size_t) key_size_);
             buf.resize(n, ' ');
-            std::memcpy((void *) buf.data(), data_ + key_size_, n);
+            buf.replace(0, n, data_ + key_size_, n);
         } while (seq_lock_.load(std::memory_order_acquire) != seq);
     }
 
