@@ -877,7 +877,7 @@ private:
                             }
                             ptr.release();
 #ifdef ENABLE_CACHE_DATA_NODE
-                            std::queue<DataNodeT*> *pq = &cached_data_node_;
+                            CircularQueue<DataNodeT*, 128> *pq = &cached_data_node_;
                             HazPtrRetire(d_node, [pq](void *p) {
                                 pq->push((DataNodeT*)p);
                             });
