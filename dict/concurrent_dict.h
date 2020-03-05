@@ -15,9 +15,14 @@ enum class InsertType {
     MUST_EXIST
 };
 
+using Hasher = std::function<size_t(const Slice &)>;
+
+extern Hasher default_hasher;
+
 class ConcurrentDict {
 public:
-    ConcurrentDict(size_t root_size, size_t max_depth, size_t thread_cnt);
+    ConcurrentDict(size_t root_size, size_t max_depth, size_t thread_cnt,
+                   Hasher hasher = default_hasher);
 
     ~ConcurrentDict();
 
@@ -37,7 +42,7 @@ public:
 
 private:
     struct DictImpl;
-    std::unique_ptr<DictImpl, std::function<void(DictImpl*)>> impl_;
+    std::unique_ptr<DictImpl, std::function<void(DictImpl *)>> impl_;
 };
 
 } // namespace concurrent_dict

@@ -85,6 +85,10 @@ uint64_t MurmurHash64A(const void *key, size_t len) {
     return h;
 }
 
+size_t MurmurHashSlice(const concurrent_dict::Slice &slice) {
+    return MurmurHash64A(slice.data(), slice.size());
+}
+
 enum class TreeNodeType {
     DATA_NODE,
     ARRAY_NODE,
@@ -231,9 +235,10 @@ struct concurrent_dict::ConcurrentDict::DictImpl {
     static constexpr uintptr_t kHighestBit = 0x8000000000000000ull;
     static constexpr uintptr_t kValidPtrField = 0x0000ffffffffffffull;
 public:
-    static DictImpl *NewDictImpl(size_t root_size, size_t max_depth, size_t thread_cnt);
+    static DictImpl *NewDictImpl(size_t root_size, size_t max_depth, size_t thread_cnt,
+                                 Hasher hasher);
 
-    DictImpl(size_t root_size, size_t max_depth, size_t thread_cnt);
+    DictImpl(size_t root_size, size_t max_depth, size_t thread_cnt, Hasher hasher);
 
     ~DictImpl();
 
@@ -246,7 +251,6 @@ public:
     bool Delete(const Slice &k, std::string *v);
 
 private:
-    static size_t Hash(const Slice &s);
 
     bool DoInsert(const Slice &k, const Slice &v, InsertType insert_type, bool del);
 
@@ -296,22 +300,21 @@ private:
     size_t root_size_;
     size_t root_bits_;
     size_t max_depth_;
+    Hasher hasher_;
     Atom<TreeNode *> root_[1]{};
 };
 
-inline size_t concurrent_dict::ConcurrentDict::DictImpl::Hash(const concurrent_dict::Slice &s) {
-    return MurmurHash64A((void *) s.data(), s.size());
-}
-
 concurrent_dict::ConcurrentDict::DictImpl *
-concurrent_dict::ConcurrentDict::DictImpl::NewDictImpl(size_t root_size, size_t max_depth, size_t thread_cnt) {
+concurrent_dict::ConcurrentDict::DictImpl::NewDictImpl(size_t root_size, size_t max_depth,
+        size_t thread_cnt, Hasher hasher) {
     root_size = next_power_of_2(root_size);
     auto ret = (DictImpl *) Allocator().allocate(sizeof(DictImpl) + sizeof(TreeNode *) * root_size);
-    new(ret) DictImpl(root_size, max_depth, thread_cnt);
+    new(ret) DictImpl(root_size, max_depth, thread_cnt, hasher);
     return ret;
 }
 
-concurrent_dict::ConcurrentDict::DictImpl::DictImpl(size_t root_size, size_t max_depth, size_t thread_cnt) {
+concurrent_dict::ConcurrentDict::DictImpl::DictImpl(size_t root_size, size_t max_depth,
+        size_t thread_cnt, Hasher hasher): hasher_(hasher) {
     root_size_ = root_size;
     root_bits_ = power_of_2(root_size_);
     thread_cnt = next_power_of_2(thread_cnt);
@@ -345,7 +348,7 @@ void concurrent_dict::ConcurrentDict::DictImpl::Free() {
 bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::Slice &k,
                                                          const concurrent_dict::Slice &v,
                                                          concurrent_dict::InsertType insert_type, bool del) {
-    size_t h = Hash(k);
+    size_t h = hasher_(k);
     size_t n = 0;
     size_t idx = GetRootIdx(h);
     Atom<TreeNode *> *node_ptr = &root_[idx];
@@ -413,7 +416,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::
                         exit(1);
                     } else {
                         auto new_arr_ptr = SafeArrayNodePtr();
-                        size_t d_node_hash = Hash(d_node->Key());
+                        size_t d_node_hash = hasher_(d_node->Key());
                         size_t d_node_idx = GetNthIdx(d_node_hash, n + 1);
                         size_t new_node_idx = GetNthIdx(h, n + 1);
 
@@ -467,13 +470,13 @@ bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::
 }
 
 inline bool concurrent_dict::ConcurrentDict::DictImpl::Insert(const concurrent_dict::Slice &k,
-                                                       const concurrent_dict::Slice &v,
-                                                       concurrent_dict::InsertType insert_type) {
+                                                              const concurrent_dict::Slice &v,
+                                                              concurrent_dict::InsertType insert_type) {
     return DoInsert(k, v, insert_type, false);
 }
 
 bool concurrent_dict::ConcurrentDict::DictImpl::Find(const concurrent_dict::Slice &k, std::string *v) {
-    size_t h = Hash(k);
+    size_t h = hasher_(k);
 
     size_t n = 0;
     size_t idx = GetRootIdx(h);
@@ -522,8 +525,8 @@ inline bool concurrent_dict::ConcurrentDict::DictImpl::Delete(const concurrent_d
 }
 
 
-concurrent_dict::ConcurrentDict::ConcurrentDict(size_t root_size, size_t max_depth, size_t thread_cnt) :
-        impl_(DictImpl::NewDictImpl(root_size, max_depth, thread_cnt),
+concurrent_dict::ConcurrentDict::ConcurrentDict(size_t root_size, size_t max_depth, size_t thread_cnt, Hasher hasher) :
+        impl_(DictImpl::NewDictImpl(root_size, max_depth, thread_cnt, hasher),
               [](DictImpl *p) { p->Free(); }) {}
 
 concurrent_dict::ConcurrentDict::~ConcurrentDict() = default;
@@ -549,5 +552,7 @@ bool concurrent_dict::ConcurrentDict::Find(const concurrent_dict::Slice &k, std:
 bool concurrent_dict::ConcurrentDict::Delete(const concurrent_dict::Slice &k, std::string *v) {
     return impl_->Delete(k, v);
 }
+
+concurrent_dict::Hasher concurrent_dict::default_hasher = MurmurHashSlice;
 
 
