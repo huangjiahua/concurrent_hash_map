@@ -879,13 +879,9 @@ private:
                                 ptr = AllocateDataNodePtr(k, v);
 #endif
                             }
-                            redo_cas_old_data_node:
                             bool result = node_ptr->compare_exchange_strong(node, ptr.get(),
                                                                             std::memory_order_acq_rel);
                             if (!result) {
-                                if (!IsArrayNode(node)) {
-                                    goto redo_cas_old_data_node;
-                                }
                                 need_pin = false;
                                 std::this_thread::yield();
                                 continue;
