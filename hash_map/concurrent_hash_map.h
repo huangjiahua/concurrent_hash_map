@@ -144,7 +144,7 @@ public:
 
     ArrayNode() {
         for (size_t i = 0; i < LEN; i++) {
-            array_[i].store(nullptr);
+            array_[i].store(nullptr, std::memory_order_release);
         }
     }
 
@@ -569,7 +569,7 @@ public:
         root_ = (Atom<TreeNode *> *) Allocator().allocate(sizeof(TreeNode *) * root_size_);
         for (size_t i = 0; i < root_size_; i++) {
             new(root_[i]) Atom<TreeNode *>;
-            root_[i].store(nullptr);
+            root_[i].store(nullptr, std::memory_order_release);
         }
 #ifndef DISABLE_FAST_TABLE
         stat_.reserve(64);
@@ -783,7 +783,7 @@ private:
     }
 
     std::unique_ptr<DataNodeT, std::function<void(DataNodeT *)>>
-    AllocateDataNodePtr(const KeyType *k, const ValueType *v, CircularQueue<DataNodeT*, 128> *pq = nullptr) {
+    AllocateDataNodePtr(const KeyType *k, const ValueType *v, CircularQueue<DataNodeT *, 128> *pq = nullptr) {
         if (!v) {
             return NullDataNodePtr();
         }
@@ -830,8 +830,13 @@ private:
         Atom<TreeNode *> *node_ptr = &root_[idx];
         TreeNode *node = nullptr;
         HazPtrHolder holder;
+        bool need_pin = true;
         while (true) {
-            node = holder.Repin(*node_ptr, IsArrayNode, FilterValidPtr);
+            if (need_pin) {
+                node = holder.Repin(*node_ptr, IsArrayNode, FilterValidPtr);
+            } else {
+                need_pin = true;
+            }
 
             if (!node) {
                 if (type == InsertType::MUST_EXIST) {
@@ -849,6 +854,7 @@ private:
                 bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) ptr.get(),
                                                                 std::memory_order_acq_rel);
                 if (!result) {
+                    need_pin = false;
                     std::this_thread::yield();
                     continue;
                 }
@@ -873,8 +879,14 @@ private:
                                 ptr = AllocateDataNodePtr(k, v);
 #endif
                             }
-                            bool result = node_ptr->compare_exchange_strong(node, ptr.get(), std::memory_order_acq_rel);
+                            redo_cas_old_data_node:
+                            bool result = node_ptr->compare_exchange_strong(node, ptr.get(),
+                                                                            std::memory_order_acq_rel);
                             if (!result) {
+                                if (!IsArrayNode(node)) {
+                                    goto redo_cas_old_data_node;
+                                }
+                                need_pin = false;
                                 std::this_thread::yield();
                                 continue;
                             }
@@ -902,7 +914,7 @@ private:
                                 }
                             } while (!hold);
                             d_node->kv_pair_.second = *v;
-                            d_node->seq_lock_.store(seq + 2);
+                            d_node->seq_lock_.store(seq + 2, std::memory_order_release);
 #else
                             std::cout << "Shouldn't be here" << std::endl;
                             exit(1);
@@ -916,7 +928,7 @@ private:
                             size_t tmp_idx = GetNthIdx(tmp_hash, n + 1);
                             size_t next_idx = GetNthIdx(h, n + 1);
 
-                            tmp_arr_ptr->array_[tmp_idx].store(node, std::memory_order_relaxed);
+                            tmp_arr_ptr->array_[tmp_idx].store(node, std::memory_order_release);
 
                             if (!ptr.get()) {
 #ifdef ENABLE_CACHE_DATA_NODE
@@ -927,7 +939,7 @@ private:
                             }
 
                             if (next_idx != tmp_idx) {
-                                tmp_arr_ptr->array_[next_idx].store(ptr.get(), std::memory_order_relaxed);
+                                tmp_arr_ptr->array_[next_idx].store(ptr.get(), std::memory_order_release);
                             }
 
                             bool result = node_ptr->compare_exchange_strong(node, MarkArrayNode(tmp_arr_ptr.get()),
@@ -945,6 +957,7 @@ private:
                                 node_ptr = &tmp_arr_ptr->array_[curr_idx];
                                 tmp_arr_ptr.release();
                             } else {
+                                need_pin = false;
                                 std::this_thread::yield();
                             }
                             continue;

@@ -191,7 +191,7 @@ struct ArrayNode : TreeNode {
     static ArrayNode *NewArrayNode() {
         auto ret = (ArrayNode *) Allocator().allocate(byte_size());
         for (size_t j = 0; j < kArrayNodeLen; j++) {
-            ret->array_[j].store(nullptr);
+            ret->array_[j].store(nullptr, std::memory_order_release);
         }
         new(ret) ArrayNode;
         return ret;
@@ -320,7 +320,7 @@ concurrent_dict::ConcurrentDict::DictImpl::DictImpl(size_t root_size, size_t max
     max_depth_ = std::min({kMaxDepth, remain / ArrayNode::kArrayNodeSizeBits, max_depth});
     for (size_t j = 0; j < root_size_; j++) {
         new(root_ + j) Atom<TreeNode *>;
-        root_[j].store(nullptr);
+        root_[j].store(nullptr, std::memory_order_release);
     }
 }
 
@@ -352,9 +352,14 @@ bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::
     TreeNode *node = nullptr;
     HazPtrHolder holder;
     auto data_ptr = SafeNullDataNodePtr();
+    bool need_pin = true;
 
     while (true) {
-        node = holder.Repin(*node_ptr, IsArrayNode, TreeNode::FilterValidPtr);
+        if (need_pin) {
+            node = holder.Repin(*node_ptr, IsArrayNode, TreeNode::FilterValidPtr);
+        } else {
+            need_pin = true;
+        }
 
         if (!node) {
             if (insert_type == InsertType::MUST_EXIST) {
@@ -369,6 +374,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::
                                                          std::memory_order_acq_rel);
 
             if (!res) {
+                need_pin = false;
                 continue;
             }
             data_ptr.release();
@@ -395,6 +401,7 @@ bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::
                                                                  std::memory_order_acq_rel);
 
                     if (!res) {
+                        need_pin = false;
                         continue;
                     }
                     data_ptr.release();
@@ -434,6 +441,8 @@ bool concurrent_dict::ConcurrentDict::DictImpl::DoInsert(const concurrent_dict::
                             size_t curr_idx = GetNthIdx(h, n);
                             node_ptr = &new_arr_ptr->array_[curr_idx];
                             new_arr_ptr.release();
+                        } else {
+                            need_pin = false;
                         }
                         continue;
                     }
