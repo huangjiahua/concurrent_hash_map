@@ -830,13 +830,8 @@ private:
         Atom<TreeNode *> *node_ptr = &root_[idx];
         TreeNode *node = nullptr;
         HazPtrHolder holder;
-        bool need_pin = true;
         while (true) {
-            if (need_pin) {
-                node = holder.Repin(*node_ptr, IsArrayNode, FilterValidPtr);
-            } else {
-                need_pin = true;
-            }
+            node = holder.Repin(*node_ptr, IsArrayNode, FilterValidPtr);
 
             if (!node) {
                 if (type == InsertType::MUST_EXIST) {
@@ -854,7 +849,6 @@ private:
                 bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) ptr.get(),
                                                                 std::memory_order_acq_rel);
                 if (!result) {
-                    need_pin = false;
                     std::this_thread::yield();
                     continue;
                 }
@@ -882,7 +876,6 @@ private:
                             bool result = node_ptr->compare_exchange_strong(node, ptr.get(),
                                                                             std::memory_order_acq_rel);
                             if (!result) {
-                                need_pin = false;
                                 std::this_thread::yield();
                                 continue;
                             }
@@ -953,7 +946,6 @@ private:
                                 node_ptr = &tmp_arr_ptr->array_[curr_idx];
                                 tmp_arr_ptr.release();
                             } else {
-                                need_pin = false;
                                 std::this_thread::yield();
                             }
                             continue;
