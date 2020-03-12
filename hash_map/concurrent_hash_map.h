@@ -881,7 +881,11 @@ private:
 #ifdef ENABLE_CACHE_DATA_NODE
                             CircularQueue<DataNodeT*, 128> *pq = &cached_data_node_;
                             HazPtrRetire(d_node, [pq](void *p) {
-                                pq->push((DataNodeT*)p);
+                                if (pq && !pq->full()) {
+                                    pq->push((DataNodeT*)p);
+                                } else {
+                                    Allocator().deallocate((uint8_t *) p, sizeof(DataNodeT));
+                                }
                             });
 #else
                             HazPtrRetire(d_node);
