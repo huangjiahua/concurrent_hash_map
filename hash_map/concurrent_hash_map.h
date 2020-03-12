@@ -849,7 +849,6 @@ private:
                 bool result = node_ptr->compare_exchange_strong(node, (TreeNode *) ptr.get(),
                                                                 std::memory_order_acq_rel);
                 if (!result) {
-                    std::this_thread::yield();
                     continue;
                 }
                 ptr.release();
@@ -876,7 +875,6 @@ private:
                             bool result = node_ptr->compare_exchange_strong(node, ptr.get(),
                                                                             std::memory_order_acq_rel);
                             if (!result) {
-                                std::this_thread::yield();
                                 continue;
                             }
                             ptr.release();
@@ -898,9 +896,6 @@ private:
                                 } while (seq & 1ull); // while seq is odd, means it is being locked
                                 hold = d_node->seq_lock_.compare_exchange_strong(seq, seq + 1,
                                                                                  std::memory_order_acq_rel);
-                                if (!hold) {
-                                    std::this_thread::yield();
-                                }
                             } while (!hold);
                             d_node->kv_pair_.second = *v;
                             d_node->seq_lock_.store(seq + 2, std::memory_order_release);
@@ -945,9 +940,7 @@ private:
                                 size_t curr_idx = GetNthIdx(h, n);
                                 node_ptr = &tmp_arr_ptr->array_[curr_idx];
                                 tmp_arr_ptr.release();
-                            } else {
-                                std::this_thread::yield();
-                            }
+                            } 
                             continue;
                         } else {
                             std::cerr << "Not Implemented Yet?" << std::endl;
