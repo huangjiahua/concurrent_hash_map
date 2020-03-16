@@ -236,10 +236,22 @@ public:
             T *p = (T*)inner_queue_.front().ptr_;
             if (NotIn(p, protected_local, protected_local_len)) {
                 inner_queue_.front().Free();
+                inner_queue_.pop();
             } else {
                 inner_queue_.push(inner_queue_.front());
+                inner_queue_.pop();
+                if (inner_queue_.size() > protected_.size()) {
+                    for (size_t i = 0; i < protected_.size() && expire; i++) {
+                        expire--;
+                        p = (T*)inner_queue_.front().ptr_;
+                        if (NotIn(p, protected_local, protected_local_len)) {
+                            inner_queue_.front().Free();
+                            inner_queue_.pop();
+                            break;
+                        }
+                    }
+                }
             }
-            inner_queue_.pop();
         }
 
         RetiredBlock block((void *)ptr, deleter);
