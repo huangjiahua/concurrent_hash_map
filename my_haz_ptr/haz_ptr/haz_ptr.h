@@ -241,13 +241,20 @@ public:
                 inner_queue_.push(inner_queue_.front());
                 inner_queue_.pop();
                 if (inner_queue_.size() > protected_.size()) {
-                    for (size_t i = 0; i < protected_.size() && expire; i++) {
+                    for (size_t i = 0; i < protected_local_len; i++) {
                         expire--;
                         p = (T*)inner_queue_.front().ptr_;
                         if (NotIn(p, protected_local, protected_local_len)) {
                             inner_queue_.front().Free();
                             inner_queue_.pop();
                             break;
+                        } else {
+                            inner_queue_.push(inner_queue_.front());
+                            inner_queue_.pop();
+                        }
+                        if (expire == 0) {
+                            ReloadProtected(protected_local, protected_local_len);
+                            expire = inner_queue_.size();
                         }
                     }
                 }
